@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { exec } from 'child_process';
-import { initIPC, broadcastToWorkers } from './ipc';
+import { initIPC, broadcastToWorkers, activeAgents, sendToWorker } from './ipc';
 
 // ═══════════════════════════════════════════════════════════════
 // STATUS MANAGER
@@ -152,7 +152,8 @@ class StatusManager {
 let bot: TelegramBot | undefined;
 let isStarted = false;
 let isMaster = false;
-let currentWorkerActivePath: string | undefined;
+let pinnedWorkerPath: string | undefined;
+let pinnedWorkerName: string | undefined;
 let brainWatcher: fs.FSWatcher | undefined;
 let activeTelegramChatId: number | undefined;
 let lastSentPromptTime = 0;
@@ -432,15 +433,17 @@ function startBrainWatcher() {
                 processedFiles.set(fileKey, stat.mtimeMs);
                 lastArtifactContent = rawContent;
 
+                const prefix = pinnedWorkerName ? `[Project: ${pinnedWorkerName}] ` : '';
+
                 if (captureType === 'telegram_response') {
                     console.log(`[TelegramBridge] 📥 Captured response (${content.length} chars)`);
-                    sendToTelegram(chatId, `🤖 AI Response:\n\n${content}`);
+                    sendToTelegram(chatId, `${prefix}🤖 AI Response:\n\n${content}`);
                     // Response received — back to Online
                     statusManager.setStatus(AgentStatus.ONLINE);
                 } else {
                     const label = path.basename(filename, '.resolved').replace('.md', '');
                     console.log(`[TelegramBridge] 📥 Captured artifact: ${label} (${content.length} chars)`);
-                    sendToTelegram(chatId, `📝 ${label}:\n\n${content}`);
+                    sendToTelegram(chatId, `${prefix}📝 ${label}:\n\n${content}`);
                     // Artifact being written — AI is working
                     statusManager.setStatus(AgentStatus.WORKING);
                 }
@@ -615,8 +618,8 @@ function startBot() {
                     '🤖 Antigravity Telegram Bridge v2\n\n' +
                     '✅ Connected! Gửi tin nhắn bất kỳ để chat với AI.\n\n' +
                     '📋 Commands:\n' +
-                    '/list — Danh sách workspaces\n' +
-                    '/switch — Chuyển workspace\n' +
+                    '/list hoặc /agents — Danh sách projects\n' +
+                    '/switch — Chuyển project\n' +
                     '/fetch — Lấy response từ chat (clipboard)\n' +
                     '/new — Tạo conversation mới\n' +
                     '/status — Kiểm tra trạng thái\n' +
@@ -626,23 +629,26 @@ function startBot() {
                 return;
             }
 
-            if (text === '/list') {
-                const workspaceFolders = vscode.workspace.workspaceFolders;
-                if (!workspaceFolders || workspaceFolders.length === 0) {
-                    await sendToTelegram(chatId, '📁 Không có Workspace nào đang mở.');
+            if (text === '/list' || text === '/agents') {
+                if (activeAgents.size === 0) {
+                    await sendToTelegram(chatId, '📁 Không có Project nào đang mở.');
                     return;
                 }
 
-                let response = '📁 Workspaces đang mở:\n\n';
+                let response = '📁 Connected Projects:\n\n';
                 const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
 
-                workspaceFolders.forEach((folder, index) => {
-                    response += `${index + 1}. ${folder.name}\n   ${folder.uri.fsPath}\n\n`;
+                let index = 0;
+                for (const info of activeAgents.values()) {
+                    const isPinned = pinnedWorkerPath === info.workspacePath;
+                    const pinIcon = isPinned ? '📌 ' : '';
+                    response += `${index + 1}. ${pinIcon}${info.workspaceName}\n   ${info.workspacePath}\n\n`;
                     keyboard.push([{
-                        text: `📂 Focus → ${folder.name}`,
+                        text: `📂 Focus → ${info.workspaceName}`,
                         callback_data: `open_ws_${index}`
                     }]);
-                });
+                    index++;
+                }
 
                 await bot?.sendMessage(chatId, response, {
                     reply_markup: { inline_keyboard: keyboard }
@@ -741,12 +747,41 @@ function startBot() {
             // ── Regular message → Send to AI ──
             await sendToTelegram(chatId, `📤 _Đã gửi..._`, 'Markdown');
 
-            // Broadcast to workers
-            const targetPath = currentWorkerActivePath || undefined;
-            broadcastToWorkers('inject_chat', { text, targetPath, chatId });
+            // Send to pinned worker, or fallback to first worker, or broadcast if none
+            if (activeAgents.size === 0) {
+                await sendToTelegram(chatId, '❌ Lỗi: Không có VS Code window nào đang online qua IPC.');
+                return;
+            }
 
-            // Send to AI
-            await handleIncomingMessage(text, chatId, targetPath);
+            // Figure out the target agent
+            let targetSocket: any;
+            if (pinnedWorkerPath) {
+                // Find pinned agent
+                for (const [sock, info] of activeAgents.entries()) {
+                    if (info.workspacePath === pinnedWorkerPath) {
+                        targetSocket = sock;
+                        break;
+                    }
+                }
+            }
+
+            // Fallback to the first connected agent
+            if (!targetSocket) {
+                for (const [sock, info] of activeAgents.entries()) {
+                    targetSocket = sock;
+                    pinnedWorkerPath = info.workspacePath;
+                    pinnedWorkerName = info.workspaceName;
+                    await sendToTelegram(chatId, `📌 Auto-pinned to project: ${info.workspaceName}`);
+                    break;
+                }
+            }
+
+            if (targetSocket) {
+                sendToWorker(targetSocket, 'inject_chat', { text, targetPath: pinnedWorkerPath, chatId });
+            } else {
+                // Ultimate fallback
+                broadcastToWorkers('inject_chat', { text, targetPath: pinnedWorkerPath, chatId });
+            }
         });
 
         // ── Callback Query Handler (Inline Keyboards) ──
@@ -762,13 +797,22 @@ function startBot() {
 
             if (data.startsWith('open_ws_')) {
                 const index = parseInt(data.replace('open_ws_', ''));
-                const workspaceFolders = vscode.workspace.workspaceFolders;
-                if (workspaceFolders && workspaceFolders[index]) {
-                    const targetFolder = workspaceFolders[index];
-                    currentWorkerActivePath = targetFolder.uri.fsPath;
-                    broadcastToWorkers('set_active_workspace', { targetPath: currentWorkerActivePath });
-                    bot?.answerCallbackQuery(query.id, { text: `Focused → ${targetFolder.name}` });
-                    await sendToTelegram(chatId, `🔄 Focus → ${targetFolder.name}`);
+                let currentIndex = 0;
+                let targetInfo: any;
+
+                for (const info of activeAgents.values()) {
+                    if (currentIndex === index) {
+                        targetInfo = info;
+                        break;
+                    }
+                    currentIndex++;
+                }
+
+                if (targetInfo) {
+                    pinnedWorkerPath = targetInfo.workspacePath;
+                    pinnedWorkerName = targetInfo.workspaceName;
+                    bot?.answerCallbackQuery(query.id, { text: `Focused → ${targetInfo.workspaceName}` });
+                    await sendToTelegram(chatId, `🔄 Changed context to → 📌 **${targetInfo.workspaceName}**`, 'Markdown');
                 } else {
                     bot?.answerCallbackQuery(query.id, { text: '⚠️ Workspace not found', show_alert: true });
                 }

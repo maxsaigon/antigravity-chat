@@ -12,7 +12,14 @@ const SOCKET_PATH = os.platform() === 'win32'
 
 let server: net.Server | undefined;
 let client: net.Socket | undefined;
-const activeWorkers = new Set<net.Socket>();
+
+export interface AgentInfo {
+    socket: net.Socket;
+    workspaceName: string;
+    workspacePath: string;
+}
+
+export const activeAgents = new Map<net.Socket, AgentInfo>();
 
 /**
  * Attempt to start IPC server. If EADDRINUSE, connect as Worker.
@@ -40,7 +47,6 @@ export function initIPC(isMasterCallback: () => void) {
 function startServer(isMasterCallback: () => void) {
     server = net.createServer((c) => {
         console.log('[IPC] Worker connected');
-        activeWorkers.add(c);
 
         // Buffer for message framing
         let buffer = '';
@@ -56,7 +62,12 @@ function startServer(isMasterCallback: () => void) {
                 try {
                     const message = JSON.parse(line);
                     if (message.type === 'register_workspace') {
-                        console.log(`[IPC] Worker registered: ${message.workspaceName}`);
+                        console.log(`[IPC] Worker registered: ${message.workspaceName} (${message.workspacePath})`);
+                        activeAgents.set(c, {
+                            socket: c,
+                            workspaceName: message.workspaceName,
+                            workspacePath: message.workspacePath
+                        });
                     }
                 } catch (e) {
                     console.error('[IPC] Invalid message from worker:', e);
@@ -66,11 +77,11 @@ function startServer(isMasterCallback: () => void) {
 
         c.on('end', () => {
             console.log('[IPC] Worker disconnected');
-            activeWorkers.delete(c);
+            activeAgents.delete(c);
         });
 
         c.on('error', () => {
-            activeWorkers.delete(c);
+            activeAgents.delete(c);
         });
     });
 
@@ -86,6 +97,8 @@ function startServer(isMasterCallback: () => void) {
     server.listen(SOCKET_PATH, () => {
         console.log('[IPC] Started as Master');
         isMasterCallback();
+        // Master also acts as a worker to register its own workspace
+        connectAsWorker();
     });
 }
 
@@ -95,8 +108,9 @@ function connectAsWorker() {
 
         const folders = vscode.workspace.workspaceFolders;
         const name = folders && folders.length > 0 ? folders[0].name : 'Unknown';
+        const path = folders && folders.length > 0 ? folders[0].uri.fsPath : 'Unknown';
 
-        sendToMaster({ type: 'register_workspace', workspaceName: name });
+        sendToMaster({ type: 'register_workspace', workspaceName: name, workspacePath: path });
     });
 
     let buffer = '';
@@ -141,9 +155,21 @@ export function broadcastToWorkers(command: string, payload: any) {
     if (!server) return;
 
     const msg = JSON.stringify({ command, ...payload }) + '\n';
-    for (const c of activeWorkers) {
+    for (const c of activeAgents.keys()) {
         try { c.write(msg); } catch (err) {
             console.error('[IPC] Write to worker failed:', err);
         }
+    }
+}
+
+/**
+ * Master sends a message to a specific worker window.
+ */
+export function sendToWorker(socket: net.Socket, command: string, payload: any) {
+    if (!server) return;
+
+    const msg = JSON.stringify({ command, ...payload }) + '\n';
+    try { socket.write(msg); } catch (err) {
+        console.error('[IPC] Write to specific worker failed:', err);
     }
 }

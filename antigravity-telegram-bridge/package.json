@@ -2,10 +2,10 @@
   "name": "antigravity-telegram-bridge",
   "displayName": "Telegram Bridge for Antigravity",
   "description": "Connects Antigravity Agent to Telegram for remote chat and control. v3: Status tracking + typing indicators.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "publisher": "daibui",
   "engines": {
-    "vscode": "^1.107.0"
+    "vscode": "^1.106.0"
   },
   "categories": [
     "Other"
@@ -57,7 +57,7 @@
   "devDependencies": {
     "@types/node": "^18.19.130",
     "@types/node-telegram-bot-api": "^0.64.14",
-    "@types/vscode": "~1.107.0",
+    "@types/vscode": "~1.106.0",
     "typescript": "^5.9.3"
   }
 }
