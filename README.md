@@ -1,27 +1,85 @@
-# Antigravity Chat (Telegram Bridge)
+# Antigravity Telegram Bridge
 
-Đây là mã nguồn hỗ trợ kết nối và trò chuyện với Antigravity AI (thông qua Telegram Bridge) nhằm đem lại trải nghiệm AI Agentic trực tiếp trên giao diện chat của Telegram.
+A native VS Code / Antigravity extension that bridges your Telegram Bot to Antigravity AI. Chat with your AI assistant, manage workspaces, and send commands from your phone — anywhere, anytime.
 
-## 🌟 Chức năng (Features)
+## Architecture
 
-- **Nhận tin nhắn từ Telegram**: Chuyển tiếp các truy vấn từ người dùng qua bot Telegram gửi trực tiếp tới Antigravity trong VS Code.
-- **Phản hồi tự động**: Lấy kết quả từ Antigravity (thường ghi vào tệp `telegram_response.md`) sau đó trả kết quả về cho người dùng qua Telegram. 
-- **Đồng bộ liên tục**: Tự động capture lại các tác vụ tự động của AI và thông báo trạng thái.
-- **Tiện ích và mở rộng**: Cung cấp cách thức dễ dàng để mở rộng và giao tiếp với Antigravity nội bộ thông qua command của VS Code.
+```
+📱 Telegram ──→ Bot API ──→ Extension ──→ sendPromptToAgentPanel ──→ 🧠 AI
+                                              ↑
+🧠 AI ──→ writes artifacts ──→ Brain Watcher detects ──→ sends to Telegram 📱
+```
 
-## 💻 Khả năng tương thích (Compatibility)
+## Features & Achievements 🚀
 
-- ✅ **macOS**: Dự án **đã được test hoàn hảo** và chạy ổn định trên môi trường macOS (bao gồm cả AppleScript cho việc tập trung cửa sổ, gửi phím nhận dạng nâng cao, v.v.).
-- ⚠️ **Windows / Các hệ điều hành khác**: Hiện tại **VẪN CHƯA ĐƯỢC TEST**. Các tính năng liên quan đến macro điều khiển cửa sổ hoặc command path có thể cần phải được tinh chỉnh thêm để tương thích hoàn toàn.
+### v0.3.0 — AI Status Tracking & Typing Indicators (Current)
 
-## 🚀 Hướng dẫn cài đặt (Installation)
+- **✅ AI Status System:** Hỗ trợ theo dõi các trạng thái hoạt động của AI (Online, Idle, Thinking, Working, Typing, Offline).
+- **✅ Typing Indicators:** Tự động hiển thị trạng thái "đang gõ" (typing) trên Telegram khi AI đang xử lý hoặc xuất nội dung.
+- **✅ Lệnh `/status`:** Cho phép kiểm tra trạng thái kết nối và hoạt động hiện tại của Bridge & Antigravity AI nhanh chóng.
 
-1. Tải về hoặc định vị file cài đặt Extension (đuôi `.vsix`) mới nhất trong thư mục `antigravity-telegram-bridge` (hiện tại là file `antigravity-telegram-bridge-0.2.1.vsix`).
-2. Mở **Visual Studio Code**.
-3. Đi tới tab **Extensions** (`Cmd+Shift+X` trên macOS).
-4. Nhấn vào biểu tượng dấu ba chấm `...` ở góc trên cùng bên phải của panel Extensions.
-5. Chọn **"Install from VSIX..."** trong danh sách thả xuống.
-6. Duyệt tới file `.vsix` đã chuẩn bị và nhấn **Install**.
-7. Đợi thông báo cài đặt thành công từ VS Code (có thể khởi động lại VS Code nếu cần).
+### v0.2.0 — Native API + Brain Watcher
 
-*(Cấu hình Token và thiết lập Bot Telegram có thể thực hiện thông qua cài đặt Extension của VS Code hoặc file môi trường được mô tả chi tiết sau).*
+- **✅ Direct API Input:** Thay thế hoàn toàn AppleScript bằng `antigravity.sendPromptToAgentPanel` — cross-platform, zero-delay, hoạt động ở background
+- **✅ Brain Watcher Output Capture:** Tự động monitor `~/.gemini/antigravity/brain/` để bắt AI response artifacts, parse nội dung, và gửi về Telegram real-time
+- **✅ Prompt Injection:** Tự động thêm instruction vào prompt yêu cầu AI ghi response ra file `telegram_response.md` → Brain Watcher bắt được
+- **✅ Smart Content Cleaning:** Loại bỏ prompt echoes, `render_diffs()`, `file:///` links trước khi gửi Telegram
+- **✅ Auto Message Splitting:** Tự chia response > 4000 chars thành nhiều phần cho Telegram
+- **✅ Per-file Debounce:** Chờ file ổn định 3s trước khi đọc, tránh gửi content chưa hoàn chỉnh
+
+### v0.1.0 — Foundation
+
+- **✅ Multi-Window IPC:** Master/Worker architecture giải quyết Telegram `409 Conflict` khi mở nhiều cửa sổ
+- **✅ Workspace Routing:** `/list` & inline keyboard để chọn workspace target
+- **✅ Telegram Bot Security:** Xác thực User ID, chặn unauthorized access
+- **✅ Legacy Clipboard Fallback:** AppleScript input injection khi API fail (macOS)
+
+## Telegram Commands
+
+| Command | Mô tả |
+|---------|--------|
+| `/start` | Hướng dẫn sử dụng |
+| `/list` | Danh sách workspaces (inline keyboard) |
+| `/new` | Tạo conversation mới |
+| `/status` | Kiểm tra trạng thái bridge & AI |
+| `/fetch` | Lấy response via clipboard (fallback) |
+| `/open <path>` | Thêm folder vào workspace |
+| `/dump` | Export VS Code commands list |
+| `<any text>` | Gửi trực tiếp tới AI → response tự động gửi về |
+
+## Setup
+
+1. Install `.vsix` vào Antigravity (`Cmd+Shift+P` → `Extensions: Install from VSIX...`)
+2. Cấu hình settings:
+   ```json
+   {
+       "telegramBridge.botToken": "YOUR_BOT_TOKEN",
+       "telegramBridge.userId": "YOUR_TELEGRAM_USER_ID"
+   }
+   ```
+3. Reload window — Bot tự khởi động
+
+## Project Structure
+
+```
+antigravity-telegram-bridge/
+├── src/
+│   ├── extension.ts   # Main: Telegram bot, input/output pipelines, commands
+│   └── ipc.ts         # Master/Worker IPC via Unix domain sockets
+├── package.json       # Extension manifest & dependencies
+└── README.md
+```
+
+## Known Limitations
+
+- **Output capture** chỉ hoạt động khi AI ở **agentic mode** (viết file/artifacts). Simple text responses cần dùng `/fetch` fallback
+- **Clipboard fallback** (`/fetch`) chỉ hỗ trợ macOS (AppleScript)
+- **IPC** chưa có auto-reconnect khi Master crash
+
+## Tech Stack
+
+- **Runtime:** VS Code Extension Host (Node.js)
+- **Telegram:** `node-telegram-bot-api`
+- **IPC:** Unix domain sockets (newline-delimited JSON)
+- **Output Capture:** `fs.watch` recursive on brain directory
+- **Input:** `antigravity.sendPromptToAgentPanel` native API
