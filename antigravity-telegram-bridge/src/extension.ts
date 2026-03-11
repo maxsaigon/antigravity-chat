@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { exec } from 'child_process';
-import { initIPC, broadcastToWorkers, activeAgents, sendToWorker } from './ipc';
+import { initIPC, broadcastToWorkers, activeAgents, sendToWorker, sendStatusToMaster } from './ipc';
 
 // ═══════════════════════════════════════════════════════════════
 // STATUS MANAGER
@@ -58,6 +58,9 @@ class StatusManager {
         this.currentStatus = newStatus;
         this.statusSince = Date.now();
         console.log(`[TelegramBridge] Status: ${oldStatus} → ${newStatus}`);
+
+        // Report to master via IPC
+        sendStatusToMaster(newStatus);
 
         // Manage typing indicator
         if (newStatus === AgentStatus.THINKING || newStatus === AgentStatus.WORKING) {
@@ -126,23 +129,23 @@ class StatusManager {
 
     getStatusLine(): string {
         const display = STATUS_DISPLAY[this.currentStatus];
-        const elapsed = this.formatDuration(Date.now() - this.statusSince);
+        const elapsed = formatDuration(Date.now() - this.statusSince);
         return `${display.emoji} ${display.label} (${elapsed})`;
-    }
-
-    private formatDuration(ms: number): string {
-        const seconds = Math.floor(ms / 1000);
-        if (seconds < 60) return `${seconds}s ago`;
-        const minutes = Math.floor(seconds / 60);
-        if (minutes < 60) return `${minutes} min ago`;
-        const hours = Math.floor(minutes / 60);
-        return `${hours}h ${minutes % 60}m ago`;
     }
 
     dispose() {
         this.stopTypingIndicator();
         this.clearIdleTimer();
     }
+}
+
+function formatDuration(ms: number): string {
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m ago`;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -674,10 +677,7 @@ function startBot() {
             if (text === '/status') {
                 const latestConv = getLatestConversationDir();
                 const convId = latestConv ? path.basename(latestConv) : 'N/A';
-                const wsName = vscode.workspace.workspaceFolders?.[0]?.name || 'N/A';
-                const activeFile = vscode.window.activeTextEditor?.document.fileName;
-                const activeFileDisplay = activeFile ? path.basename(activeFile) : 'N/A';
-
+                
                 let diagInfo = '';
                 try {
                     const diag = await vscode.commands.executeCommand('antigravity.getDiagnostics') as any;
@@ -686,14 +686,26 @@ function startBot() {
                     }
                 } catch { }
 
+                let agentStatusLines = '';
+                if (activeAgents.size > 0) {
+                    for (const info of activeAgents.values()) {
+                        const isPinned = pinnedWorkerPath === info.workspacePath;
+                        const pinIcon = isPinned ? '📌 ' : '🔹 ';
+                        const statusEmoji = STATUS_DISPLAY[info.status as AgentStatus]?.emoji || '❓';
+                        const statusLabel = STATUS_DISPLAY[info.status as AgentStatus]?.label || info.status;
+                        const elapsed = formatDuration(Date.now() - info.lastSeen);
+                        agentStatusLines += `${pinIcon}${info.workspaceName}: ${statusEmoji} ${statusLabel} (${elapsed})\n`;
+                    }
+                } else {
+                    agentStatusLines = `${statusManager.getStatusLine()}\n`;
+                }
+
                 await sendToTelegram(chatId,
-                    `📊 Antigravity Status\n\n` +
-                    `${statusManager.getStatusLine()}\n` +
-                    `🖥️ Workspace: ${wsName}\n` +
-                    `💬 Conversation: ${convId.substring(0, 8)}...\n` +
-                    `📝 Active file: ${activeFileDisplay}\n` +
+                    `📊 Antigravity Multi-Project Status\n\n` +
+                    agentStatusLines +
+                    `\n💬 Latest Conv: ${convId.substring(0, 8)}...\n` +
                     `🤖 Brain Watcher: ✅ Active\n` +
-                    `📡 IPC Role: ${isMaster ? 'Master' : 'Worker'}` +
+                    `📡 IPC Role: Master (${activeAgents.size} agents)` +
                     diagInfo
                 );
                 return;

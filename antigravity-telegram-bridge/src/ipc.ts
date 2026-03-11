@@ -17,6 +17,8 @@ export interface AgentInfo {
     socket: net.Socket;
     workspaceName: string;
     workspacePath: string;
+    status: string;
+    lastSeen: number;
 }
 
 export const activeAgents = new Map<net.Socket, AgentInfo>();
@@ -66,8 +68,17 @@ function startServer(isMasterCallback: () => void) {
                         activeAgents.set(c, {
                             socket: c,
                             workspaceName: message.workspaceName,
-                            workspacePath: message.workspacePath
+                            workspacePath: message.workspacePath,
+                            status: 'online',
+                            lastSeen: Date.now()
                         });
+                    } else if (message.type === 'status_update') {
+                        const info = activeAgents.get(c);
+                        if (info) {
+                            info.status = message.status;
+                            info.lastSeen = Date.now();
+                            console.log(`[IPC] Status update from ${info.workspaceName}: ${message.status}`);
+                        }
                     }
                 } catch (e) {
                     console.error('[IPC] Invalid message from worker:', e);
@@ -145,6 +156,13 @@ function sendToMaster(data: object) {
     if (client) {
         try { client.write(JSON.stringify(data) + '\n'); } catch { }
     }
+}
+
+/**
+ * Worker sends status update to Master.
+ */
+export function sendStatusToMaster(status: string) {
+    sendToMaster({ type: 'status_update', status });
 }
 
 /**

@@ -14,50 +14,50 @@ A native VS Code / Antigravity extension that bridges your Telegram Bot to Antig
 
 ### v0.3.0 — AI Status Tracking & Typing Indicators (Current)
 
-- **✅ AI Status System:** Hỗ trợ theo dõi các trạng thái hoạt động của AI (Online, Idle, Thinking, Working, Typing, Offline).
-- **✅ Typing Indicators:** Tự động hiển thị trạng thái "đang gõ" (typing) trên Telegram khi AI đang xử lý hoặc xuất nội dung.
-- **✅ Lệnh `/status`:** Cho phép kiểm tra trạng thái kết nối và hoạt động hiện tại của Bridge & Antigravity AI nhanh chóng.
+- **✅ AI Status System:** Supports tracking AI activity states (Online, Idle, Thinking, Working, Typing, Offline).
+- **✅ Typing Indicators:** Automatically displays "typing" status on Telegram when AI is processing or generating content.
+- **✅ `/status` Command:** Allows quick checking of the current connection and activity status of the Bridge & Antigravity AI.
 
 ### v0.2.0 — Native API + Brain Watcher
 
-- **✅ Direct API Input:** Thay thế hoàn toàn AppleScript bằng `antigravity.sendPromptToAgentPanel` — cross-platform, zero-delay, hoạt động ở background
-- **✅ Brain Watcher Output Capture:** Tự động monitor `~/.gemini/antigravity/brain/` để bắt AI response artifacts, parse nội dung, và gửi về Telegram real-time
-- **✅ Prompt Injection:** Tự động thêm instruction vào prompt yêu cầu AI ghi response ra file `telegram_response.md` → Brain Watcher bắt được
-- **✅ Smart Content Cleaning:** Loại bỏ prompt echoes, `render_diffs()`, `file:///` links trước khi gửi Telegram
-- **✅ Auto Message Splitting:** Tự chia response > 4000 chars thành nhiều phần cho Telegram
-- **✅ Per-file Debounce:** Chờ file ổn định 3s trước khi đọc, tránh gửi content chưa hoàn chỉnh
+- **✅ Direct API Input:** Fully replaces AppleScript with `antigravity.sendPromptToAgentPanel` — cross-platform, zero-delay, background execution.
+- **✅ Brain Watcher Output Capture:** Automatically monitors `~/.gemini/antigravity/brain/` to catch AI response artifacts, parses content, and sends to Telegram in real-time.
+- **✅ Prompt Injection:** Automatically adds instruction to the prompt requiring AI to write responses to a `telegram_response.md` file → Brain Watcher captures it.
+- **✅ Smart Content Cleaning:** Removes prompt echoes, `render_diffs()`, `file:///` links before sending to Telegram.
+- **✅ Auto Message Splitting:** Automatically splits responses > 4000 chars into multiple parts for Telegram.
+- **✅ Per-file Debounce:** Waits for the file to stabilize for 3s before reading, avoiding sending incomplete content.
 
 ### v0.1.0 — Foundation
 
-- **✅ Multi-Window IPC:** Master/Worker architecture giải quyết Telegram `409 Conflict` khi mở nhiều cửa sổ
-- **✅ Workspace Routing:** `/list` & inline keyboard để chọn workspace target
-- **✅ Telegram Bot Security:** Xác thực User ID, chặn unauthorized access
-- **✅ Legacy Clipboard Fallback:** AppleScript input injection khi API fail (macOS)
+- **✅ Multi-Window IPC:** Master/Worker architecture solves Telegram `409 Conflict` when opening multiple windows.
+- **✅ Workspace Routing:** `/list` & inline keyboard to select workspace target.
+- **✅ Telegram Bot Security:** User ID authentication, blocks unauthorized access.
+- **✅ Legacy Clipboard Fallback:** AppleScript input injection when API fails (macOS).
 
 ## Telegram Commands
 
-| Command | Mô tả |
+| Command | Description |
 |---------|--------|
-| `/start` | Hướng dẫn sử dụng |
-| `/list` | Danh sách workspaces (inline keyboard) |
-| `/new` | Tạo conversation mới |
-| `/status` | Kiểm tra trạng thái bridge & AI |
-| `/fetch` | Lấy response via clipboard (fallback) |
-| `/open <path>` | Thêm folder vào workspace |
+| `/start` | Usage guide |
+| `/list` | List workspaces (inline keyboard) |
+| `/new` | Create new conversation |
+| `/status` | Check bridge & AI status |
+| `/fetch` | Get response via clipboard (fallback) |
+| `/open <path>` | Add folder to workspace |
 | `/dump` | Export VS Code commands list |
-| `<any text>` | Gửi trực tiếp tới AI → response tự động gửi về |
+| `<any text>` | Send directly to AI → response is automatically sent back |
 
 ## Setup
 
-1. Install `.vsix` vào Antigravity (`Cmd+Shift+P` → `Extensions: Install from VSIX...`)
-2. Cấu hình settings:
+1. Install `.vsix` into Antigravity (`Cmd+Shift+P` → `Extensions: Install from VSIX...`)
+2. Configure settings:
    ```json
    {
        "telegramBridge.botToken": "YOUR_BOT_TOKEN",
        "telegramBridge.userId": "YOUR_TELEGRAM_USER_ID"
    }
    ```
-3. Reload window — Bot tự khởi động
+3. Reload window — Bot starts automatically
 
 ## Project Structure
 
@@ -72,9 +72,9 @@ antigravity-telegram-bridge/
 
 ## Known Limitations
 
-- **Output capture** chỉ hoạt động khi AI ở **agentic mode** (viết file/artifacts). Simple text responses cần dùng `/fetch` fallback
-- **Clipboard fallback** (`/fetch`) chỉ hỗ trợ macOS (AppleScript)
-- **IPC** chưa có auto-reconnect khi Master crash
+- **Output capture** only works when AI is in **agentic mode** (writing files/artifacts). Simple text responses require the `/fetch` fallback.
+- **Clipboard fallback** (`/fetch`) only supports macOS (AppleScript).
+- **IPC** does not auto-reconnect when Master crashes yet.
 
 ## Tech Stack
 
