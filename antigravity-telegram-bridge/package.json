@@ -1,0 +1,58 @@
+{
+  "name": "antigravity-telegram-bridge",
+  "displayName": "Telegram Bridge for Antigravity",
+  "description": "Connects Antigravity Agent to Telegram for remote chat and control. v2: Native API + Brain Watcher output capture.",
+  "version": "0.2.1",
+  "publisher": "daibui",
+  "engines": {
+    "vscode": "^1.107.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Telegram Bridge",
+      "properties": {
+        "telegramBridge.botToken": {
+          "type": "string",
+          "default": "",
+          "description": "The Bot Token obtained from @BotFather on Telegram."
+        },
+        "telegramBridge.userId": {
+          "type": "string",
+          "default": "",
+          "description": "Your Telegram User ID (to restrict access)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "telegramBridge.start",
+        "title": "Telegram Bridge: Start Bot"
+      },
+      {
+        "command": "telegramBridge.stop",
+        "title": "Telegram Bridge: Stop Bot"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.65.1"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.130",
+    "@types/node-telegram-bot-api": "^0.64.14",
+    "@types/vscode": "~1.107.0",
+    "typescript": "^5.9.3"
+  }
+}
