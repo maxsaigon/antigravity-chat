@@ -379,8 +379,8 @@ function startBrainWatcher() {
         brainWatcher = undefined;
     }
 
-    // Track which files we've already sent to Telegram
-    const processedFiles = new Set<string>();
+    // Track which files we've already sent to Telegram (mapping fileKey to last mtimeMs sent)
+    const processedFiles = new Map<string, number>();
     // Per-file debounce timers
     const debounceTimers = new Map<string, NodeJS.Timeout>();
 
@@ -397,9 +397,6 @@ function startBrainWatcher() {
         // Build unique key for deduplication
         const fileKey = `${convId}:${captureType}:${path.basename(filename)}`;
 
-        // Skip if already sent
-        if (processedFiles.has(fileKey)) return;
-
         // Per-file debounce: wait 3s for file to stabilize
         const existingTimer = debounceTimers.get(fileKey);
         if (existingTimer) clearTimeout(existingTimer);
@@ -407,7 +404,6 @@ function startBrainWatcher() {
         const chatId = activeTelegramChatId;
         debounceTimers.set(fileKey, setTimeout(() => {
             debounceTimers.delete(fileKey);
-            if (processedFiles.has(fileKey)) return;
 
             const fullPath = path.join(brainDir, filename);
             try {
@@ -417,6 +413,11 @@ function startBrainWatcher() {
 
                 // Only process files modified AFTER the last prompt
                 if (stat.mtimeMs < lastSentPromptTime) return;
+
+                // Skip if we already processed this EXACT SAME file version
+                const lastProcessedTime = processedFiles.get(fileKey);
+                // Allow a tiny margin of error for mtimeMs, but if it's the same, skip
+                if (lastProcessedTime && Math.abs(stat.mtimeMs - lastProcessedTime) === 0) return;
 
                 const rawContent = fs.readFileSync(fullPath, 'utf-8');
                 if (!rawContent.trim()) return;
@@ -428,7 +429,7 @@ function startBrainWatcher() {
                 const content = cleanContentForTelegram(rawContent, filename);
                 if (!content || content.length < 5) return;
 
-                processedFiles.add(fileKey);
+                processedFiles.set(fileKey, stat.mtimeMs);
                 lastArtifactContent = rawContent;
 
                 if (captureType === 'telegram_response') {
