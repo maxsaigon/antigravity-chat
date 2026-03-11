@@ -104,6 +104,5 @@ dist
 .DS_Store
 Thumbs.db
 
-# VSIX extension
-*.vsix
+# VSIX extensionx
 out/
