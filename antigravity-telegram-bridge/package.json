@@ -1,8 +1,8 @@
 {
   "name": "antigravity-telegram-bridge",
   "displayName": "Telegram Bridge for Antigravity",
-  "description": "Connects Antigravity Agent to Telegram for remote chat and control. v2: Native API + Brain Watcher output capture.",
-  "version": "0.2.1",
+  "description": "Connects Antigravity Agent to Telegram for remote chat and control. v3: Status tracking + typing indicators.",
+  "version": "0.3.0",
   "publisher": "daibui",
   "engines": {
     "vscode": "^1.107.0"
@@ -27,6 +27,11 @@
           "type": "string",
           "default": "",
           "description": "Your Telegram User ID (to restrict access)."
+        },
+        "telegramBridge.statusNotifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send proactive status change notifications (Online/Thinking/Working/Idle/Offline) to Telegram."
         }
       }
     },

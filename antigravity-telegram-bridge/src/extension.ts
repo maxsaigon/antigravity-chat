@@ -7,6 +7,145 @@ import { exec } from 'child_process';
 import { initIPC, broadcastToWorkers } from './ipc';
 
 // ═══════════════════════════════════════════════════════════════
+// STATUS MANAGER
+// ═══════════════════════════════════════════════════════════════
+
+enum AgentStatus {
+    OFFLINE = 'offline',
+    ONLINE = 'online',
+    IDLE = 'idle',
+    TYPING = 'typing',
+    THINKING = 'thinking',
+    WORKING = 'working',
+}
+
+const STATUS_DISPLAY: Record<AgentStatus, { emoji: string; label: string }> = {
+    [AgentStatus.OFFLINE]: { emoji: '🔴', label: 'Offline' },
+    [AgentStatus.ONLINE]: { emoji: '🟢', label: 'Online' },
+    [AgentStatus.IDLE]: { emoji: '💤', label: 'Idle' },
+    [AgentStatus.TYPING]: { emoji: '✍️', label: 'Typing' },
+    [AgentStatus.THINKING]: { emoji: '🧠', label: 'Thinking...' },
+    [AgentStatus.WORKING]: { emoji: '⚡', label: 'Working...' },
+};
+
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const TYPING_ACTION_INTERVAL_MS = 4000; // Repeat every 4s (Telegram shows for 5s)
+
+class StatusManager {
+    private currentStatus: AgentStatus = AgentStatus.OFFLINE;
+    private statusSince: number = Date.now();
+    private idleTimer: NodeJS.Timeout | undefined;
+    private typingActionInterval: NodeJS.Timeout | undefined;
+    private notificationsEnabled: boolean = true;
+
+    get status(): AgentStatus { return this.currentStatus; }
+    get since(): number { return this.statusSince; }
+
+    setNotificationsEnabled(enabled: boolean) {
+        this.notificationsEnabled = enabled;
+    }
+
+    async setStatus(newStatus: AgentStatus) {
+        const oldStatus = this.currentStatus;
+        if (oldStatus === newStatus) {
+            // Still reset idle timer on activity
+            if (newStatus !== AgentStatus.OFFLINE && newStatus !== AgentStatus.IDLE) {
+                this.resetIdleTimer();
+            }
+            return;
+        }
+
+        this.currentStatus = newStatus;
+        this.statusSince = Date.now();
+        console.log(`[TelegramBridge] Status: ${oldStatus} → ${newStatus}`);
+
+        // Manage typing indicator
+        if (newStatus === AgentStatus.THINKING || newStatus === AgentStatus.WORKING) {
+            this.startTypingIndicator();
+        } else {
+            this.stopTypingIndicator();
+        }
+
+        // Manage idle timer
+        if (newStatus === AgentStatus.OFFLINE || newStatus === AgentStatus.IDLE) {
+            this.clearIdleTimer();
+        } else {
+            this.resetIdleTimer();
+        }
+
+        // Send proactive notification
+        if (this.notificationsEnabled && activeTelegramChatId && bot) {
+            const display = STATUS_DISPLAY[newStatus];
+            // Don't spam for TYPING state (too frequent)
+            if (newStatus !== AgentStatus.TYPING) {
+                const msg = `${display.emoji} ${display.label}`;
+                try {
+                    await bot.sendMessage(activeTelegramChatId, msg);
+                } catch (e: any) {
+                    console.error('[TelegramBridge] Status notification failed:', e.message);
+                }
+            }
+        }
+    }
+
+    private startTypingIndicator() {
+        this.stopTypingIndicator();
+        const sendAction = () => {
+            if (activeTelegramChatId && bot) {
+                bot.sendChatAction(activeTelegramChatId, 'typing').catch(() => { });
+            }
+        };
+        sendAction(); // Send immediately
+        this.typingActionInterval = setInterval(sendAction, TYPING_ACTION_INTERVAL_MS);
+    }
+
+    private stopTypingIndicator() {
+        if (this.typingActionInterval) {
+            clearInterval(this.typingActionInterval);
+            this.typingActionInterval = undefined;
+        }
+    }
+
+    private resetIdleTimer() {
+        this.clearIdleTimer();
+        this.idleTimer = setTimeout(() => {
+            if (this.currentStatus !== AgentStatus.OFFLINE &&
+                this.currentStatus !== AgentStatus.THINKING &&
+                this.currentStatus !== AgentStatus.WORKING) {
+                this.setStatus(AgentStatus.IDLE);
+            }
+        }, IDLE_TIMEOUT_MS);
+    }
+
+    private clearIdleTimer() {
+        if (this.idleTimer) {
+            clearTimeout(this.idleTimer);
+            this.idleTimer = undefined;
+        }
+    }
+
+    getStatusLine(): string {
+        const display = STATUS_DISPLAY[this.currentStatus];
+        const elapsed = this.formatDuration(Date.now() - this.statusSince);
+        return `${display.emoji} ${display.label} (${elapsed})`;
+    }
+
+    private formatDuration(ms: number): string {
+        const seconds = Math.floor(ms / 1000);
+        if (seconds < 60) return `${seconds}s ago`;
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return `${minutes} min ago`;
+        const hours = Math.floor(minutes / 60);
+        return `${hours}h ${minutes % 60}m ago`;
+    }
+
+    dispose() {
+        this.stopTypingIndicator();
+        this.clearIdleTimer();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════════════════════
 
@@ -18,6 +157,7 @@ let brainWatcher: fs.FSWatcher | undefined;
 let activeTelegramChatId: number | undefined;
 let lastSentPromptTime = 0;
 let lastArtifactContent = '';
+const statusManager = new StatusManager();
 
 // ═══════════════════════════════════════════════════════════════
 // HELPERS
@@ -107,6 +247,7 @@ async function sendToAntigravity(text: string, chatId: number): Promise<void> {
     ].join('\n');
 
     lastSentPromptTime = Date.now();
+    statusManager.setStatus(AgentStatus.THINKING);
 
     try {
         await vscode.commands.executeCommand('antigravity.sendPromptToAgentPanel', wrappedPrompt);
@@ -293,10 +434,14 @@ function startBrainWatcher() {
                 if (captureType === 'telegram_response') {
                     console.log(`[TelegramBridge] 📥 Captured response (${content.length} chars)`);
                     sendToTelegram(chatId, `🤖 AI Response:\n\n${content}`);
+                    // Response received — back to Online
+                    statusManager.setStatus(AgentStatus.ONLINE);
                 } else {
                     const label = path.basename(filename, '.resolved').replace('.md', '');
                     console.log(`[TelegramBridge] 📥 Captured artifact: ${label} (${content.length} chars)`);
                     sendToTelegram(chatId, `📝 ${label}:\n\n${content}`);
+                    // Artifact being written — AI is working
+                    statusManager.setStatus(AgentStatus.WORKING);
                 }
             } catch (e: any) {
                 console.error('[TelegramBridge] Brain watcher error:', e.message);
@@ -370,6 +515,50 @@ export function activate(context: vscode.ExtensionContext) {
     const stopDisposable = vscode.commands.registerCommand('telegramBridge.stop', () => stopBot());
     context.subscriptions.push(startDisposable, stopDisposable);
 
+    // Load notification preference
+    const config = vscode.workspace.getConfiguration('telegramBridge');
+    statusManager.setNotificationsEnabled(config.get<boolean>('statusNotifications', true));
+
+    // Listen for config changes
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(e => {
+            if (e.affectsConfiguration('telegramBridge.statusNotifications')) {
+                const cfg = vscode.workspace.getConfiguration('telegramBridge');
+                statusManager.setNotificationsEnabled(cfg.get<boolean>('statusNotifications', true));
+            }
+        })
+    );
+
+    // VS Code typing detection (debounced)
+    let typingDebounce: NodeJS.Timeout | undefined;
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument(() => {
+            if (typingDebounce) clearTimeout(typingDebounce);
+            // Only set TYPING if we're currently ONLINE or IDLE (not during AI processing)
+            const s = statusManager.status;
+            if (s === AgentStatus.ONLINE || s === AgentStatus.IDLE) {
+                statusManager.setStatus(AgentStatus.TYPING);
+            }
+            typingDebounce = setTimeout(() => {
+                if (statusManager.status === AgentStatus.TYPING) {
+                    statusManager.setStatus(AgentStatus.ONLINE);
+                }
+            }, 3000);
+        })
+    );
+
+    // VS Code window focus detection
+    context.subscriptions.push(
+        vscode.window.onDidChangeWindowState(state => {
+            if (state.focused) {
+                const s = statusManager.status;
+                if (s === AgentStatus.IDLE) {
+                    statusManager.setStatus(AgentStatus.ONLINE);
+                }
+            }
+        })
+    );
+
     // Start Brain Watcher immediately
     startBrainWatcher();
 
@@ -400,6 +589,7 @@ function startBot() {
         isStarted = true;
         console.log('[TelegramBridge v2] Bot started!');
         vscode.window.showInformationMessage('Telegram Bridge v2 started! 🚀');
+        statusManager.setStatus(AgentStatus.ONLINE);
 
         // ── Message Handler ──
         bot.on('message', async (msg) => {
@@ -429,6 +619,7 @@ function startBot() {
                     '/fetch — Lấy response từ chat (clipboard)\n' +
                     '/new — Tạo conversation mới\n' +
                     '/status — Kiểm tra trạng thái\n' +
+                    '/notifications — Bật/tắt thông báo trạng thái\n' +
                     '/dump — Export VS Code commands'
                 );
                 return;
@@ -477,6 +668,8 @@ function startBot() {
                 const latestConv = getLatestConversationDir();
                 const convId = latestConv ? path.basename(latestConv) : 'N/A';
                 const wsName = vscode.workspace.workspaceFolders?.[0]?.name || 'N/A';
+                const activeFile = vscode.window.activeTextEditor?.document.fileName;
+                const activeFileDisplay = activeFile ? path.basename(activeFile) : 'N/A';
 
                 let diagInfo = '';
                 try {
@@ -487,12 +680,28 @@ function startBot() {
                 } catch { }
 
                 await sendToTelegram(chatId,
-                    `📊 Trạng thái Bridge v2\n\n` +
+                    `📊 Antigravity Status\n\n` +
+                    `${statusManager.getStatusLine()}\n` +
                     `🖥️ Workspace: ${wsName}\n` +
                     `💬 Conversation: ${convId.substring(0, 8)}...\n` +
+                    `📝 Active file: ${activeFileDisplay}\n` +
                     `🤖 Brain Watcher: ✅ Active\n` +
                     `📡 IPC Role: ${isMaster ? 'Master' : 'Worker'}` +
                     diagInfo
+                );
+                return;
+            }
+
+            if (text === '/notifications') {
+                const config = vscode.workspace.getConfiguration('telegramBridge');
+                const current = config.get<boolean>('statusNotifications', true);
+                const newValue = !current;
+                await config.update('statusNotifications', newValue, vscode.ConfigurationTarget.Global);
+                statusManager.setNotificationsEnabled(newValue);
+                await sendToTelegram(chatId,
+                    newValue
+                        ? '🔔 Thông báo trạng thái: BẬT'
+                        : '🔕 Thông báo trạng thái: TẮT'
                 );
                 return;
             }
@@ -597,6 +806,7 @@ export async function handleIncomingMessage(text: string, chatId: number, target
 
 function stopBot() {
     if (bot && isStarted) {
+        statusManager.setStatus(AgentStatus.OFFLINE);
         bot.stopPolling().then(() => {
             isStarted = false;
             bot = undefined;
@@ -606,6 +816,8 @@ function stopBot() {
 }
 
 export function deactivate() {
+    statusManager.setStatus(AgentStatus.OFFLINE);
+    statusManager.dispose();
     stopBot();
     brainWatcher?.close();
 }

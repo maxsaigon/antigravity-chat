@@ -12,7 +12,13 @@ A native VS Code / Antigravity extension that bridges your Telegram Bot to Antig
 
 ## Features & Achievements 🚀
 
-### v2.0 — Native API + Brain Watcher (Current)
+### v0.3.0 — AI Status Tracking & Typing Indicators (Current)
+
+- **✅ AI Status System:** Hỗ trợ theo dõi các trạng thái hoạt động của AI (Online, Idle, Thinking, Working, Typing, Offline).
+- **✅ Typing Indicators:** Tự động hiển thị trạng thái "đang gõ" (typing) trên Telegram khi AI đang xử lý hoặc xuất nội dung.
+- **✅ Lệnh `/status`:** Cho phép kiểm tra trạng thái kết nối và hoạt động hiện tại của Bridge & Antigravity AI nhanh chóng.
+
+### v0.2.0 — Native API + Brain Watcher
 
 - **✅ Direct API Input:** Thay thế hoàn toàn AppleScript bằng `antigravity.sendPromptToAgentPanel` — cross-platform, zero-delay, hoạt động ở background
 - **✅ Brain Watcher Output Capture:** Tự động monitor `~/.gemini/antigravity/brain/` để bắt AI response artifacts, parse nội dung, và gửi về Telegram real-time
@@ -21,7 +27,7 @@ A native VS Code / Antigravity extension that bridges your Telegram Bot to Antig
 - **✅ Auto Message Splitting:** Tự chia response > 4000 chars thành nhiều phần cho Telegram
 - **✅ Per-file Debounce:** Chờ file ổn định 3s trước khi đọc, tránh gửi content chưa hoàn chỉnh
 
-### v1.0 — Foundation
+### v0.1.0 — Foundation
 
 - **✅ Multi-Window IPC:** Master/Worker architecture giải quyết Telegram `409 Conflict` khi mở nhiều cửa sổ
 - **✅ Workspace Routing:** `/list` & inline keyboard để chọn workspace target
