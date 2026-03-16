@@ -104,5 +104,14 @@ dist
 .DS_Store
 Thumbs.db
 
-# VSIX extensionx
+# VSIX extensions
+*.vsix
 out/
+
+# Temp/test files
+dump.txt
+vscode_commands_dump.json
+test_copy*.js
+
+# Deprecated test extensions
+antigravity-api-test/

@@ -3,6 +3,19 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { handleIncomingMessage } from './extension';
+import { AgentManagerController } from './agent-manager';
+
+const agentManagerIpc = new AgentManagerController();
+
+/**
+ * Handle Agent Manager commands received via IPC from Master.
+ */
+async function handleAgentManagerCommand(message: any) {
+    const { action, args, requestId } = message;
+    const result = await agentManagerIpc.probeCommand(action, ...(args || []));
+    console.log(`[IPC] Agent Manager command result: ${action} -> ${result.success}`);
+    // Could send result back to master via sendToMaster if needed
+}
 
 // The IPC socket path
 const SOCKET_ID = 'antigravity-telegram-bridge.sock';
@@ -136,6 +149,9 @@ function connectAsWorker() {
                 const message = JSON.parse(line);
                 if (message.command === 'inject_chat') {
                     handleIncomingMessage(message.text, message.chatId, message.targetPath);
+                } else if (message.command === 'agent_manager_cmd') {
+                    // Agent Manager commands routed from Master
+                    handleAgentManagerCommand(message);
                 }
             } catch (e) {
                 console.error('[IPC] Invalid message from master:', e);

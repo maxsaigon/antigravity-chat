@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { exec } from 'child_process';
 import { initIPC, broadcastToWorkers, activeAgents, sendToWorker, sendStatusToMaster } from './ipc';
+import { AgentManagerController, AGENT_COMMANDS } from './agent-manager';
 
 // ═══════════════════════════════════════════════════════════════
 // STATUS MANAGER
@@ -148,6 +149,18 @@ function formatDuration(ms: number): string {
     return `${hours}h ${minutes % 60}m ago`;
 }
 
+/**
+ * Simple string hash (djb2) for content deduplication.
+ */
+function simpleHash(str: string): string {
+    let hash = 5381;
+    for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) + hash) + str.charCodeAt(i);
+        hash = hash & hash; // Convert to 32-bit integer
+    }
+    return hash.toString(36);
+}
+
 // ═══════════════════════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════════════════════
@@ -160,8 +173,11 @@ let pinnedWorkerName: string | undefined;
 let brainWatcher: fs.FSWatcher | undefined;
 let activeTelegramChatId: number | undefined;
 let lastSentPromptTime = 0;
-let lastArtifactContent = '';
 const statusManager = new StatusManager();
+const agentManager = new AgentManagerController();
+// Content-hash dedup: tracks recently sent content hashes to prevent duplicates
+const recentlySentHashes = new Map<string, number>(); // hash → timestamp
+const CONTENT_DEDUP_WINDOW_MS = 30_000; // 30 seconds
 
 // ═══════════════════════════════════════════════════════════════
 // HELPERS
@@ -399,7 +415,12 @@ function startBrainWatcher() {
         const convId = parts[0];
 
         // Build unique key for deduplication
-        const fileKey = `${convId}:${captureType}:${path.basename(filename)}`;
+        // IMPORTANT: Normalize telegram_response variants to share same key
+        // (telegram_response.md and telegram_response.md.resolved are the same content)
+        const normalizedBasename = captureType === 'telegram_response'
+            ? 'telegram_response.md'  // Always use same key regardless of .resolved suffix
+            : path.basename(filename);
+        const fileKey = `${convId}:${captureType}:${normalizedBasename}`;
 
         // Per-file debounce: wait 3s for file to stabilize
         const existingTimer = debounceTimers.get(fileKey);
@@ -420,21 +441,33 @@ function startBrainWatcher() {
 
                 // Skip if we already processed this EXACT SAME file version
                 const lastProcessedTime = processedFiles.get(fileKey);
-                // Allow a tiny margin of error for mtimeMs, but if it's the same, skip
                 if (lastProcessedTime && Math.abs(stat.mtimeMs - lastProcessedTime) === 0) return;
 
                 const rawContent = fs.readFileSync(fullPath, 'utf-8');
                 if (!rawContent.trim()) return;
 
-                // Skip if content is same as last artifact we sent
-                if (rawContent === lastArtifactContent) return;
+                // Content-hash dedup: prevent sending same content within time window
+                // This catches duplicates from telegram_response.md vs .resolved,
+                // and any other scenario where same content arrives via different paths
+                const contentHash = simpleHash(rawContent);
+                const now = Date.now();
+                const lastSentTime = recentlySentHashes.get(contentHash);
+                if (lastSentTime && (now - lastSentTime) < CONTENT_DEDUP_WINDOW_MS) {
+                    console.log(`[TelegramBridge] ⏭️ Skipped duplicate content (hash: ${contentHash})`);
+                    return;
+                }
 
                 // Clean content for Telegram
                 const content = cleanContentForTelegram(rawContent, filename);
                 if (!content || content.length < 5) return;
 
                 processedFiles.set(fileKey, stat.mtimeMs);
-                lastArtifactContent = rawContent;
+                recentlySentHashes.set(contentHash, now);
+
+                // Cleanup old hashes to prevent memory leak
+                for (const [hash, ts] of recentlySentHashes) {
+                    if (now - ts > CONTENT_DEDUP_WINDOW_MS * 2) recentlySentHashes.delete(hash);
+                }
 
                 const prefix = pinnedWorkerName ? `[Project: ${pinnedWorkerName}] ` : '';
 
@@ -614,24 +647,108 @@ function startBot() {
 
             if (!text) return;
 
-            // ── Commands ──
+            // ══════════════════════════════════════════════════
+            // COMMANDS — v0.5.5 Simplified
+            // 7 main commands + hidden dev/legacy commands
+            // ══════════════════════════════════════════════════
 
+            // ── /start — Welcome & help ──
             if (text === '/start') {
                 await sendToTelegram(chatId,
-                    '🤖 Antigravity Telegram Bridge v2\n\n' +
+                    '🤖 Antigravity Telegram Bridge v0.5.5\n\n' +
                     '✅ Connected! Gửi tin nhắn bất kỳ để chat với AI.\n\n' +
                     '📋 Commands:\n' +
-                    '/list hoặc /agents — Danh sách projects\n' +
-                    '/switch — Chuyển project\n' +
-                    '/fetch — Lấy response từ chat (clipboard)\n' +
-                    '/new — Tạo conversation mới\n' +
-                    '/status — Kiểm tra trạng thái\n' +
-                    '/notifications — Bật/tắt thông báo trạng thái\n' +
-                    '/dump — Export VS Code commands'
+                    '/ok — Accept code changes\n' +
+                    '/no — Reject code changes\n' +
+                    '/stop — Hủy task AI\n' +
+                    '/status — Trạng thái + trace + diagnostics\n' +
+                    '/list — Danh sách projects\n' +
+                    '/conv — Conversations (list + switch)\n' +
+                    '/new — Tạo conversation mới\n\n' +
+                    '💡 Gõ bất kỳ text → gửi cho AI'
                 );
                 return;
             }
 
+            // ── /ok (or /accept) — Accept code changes ──
+            if (text === '/ok' || text === '/accept') {
+                const result = await agentManager.acceptChanges();
+                await sendToTelegram(chatId, result.success
+                    ? `✅ ${result.command} (${result.duration}ms)`
+                    : `❌ ${result.error}`);
+                return;
+            }
+
+            // ── /no (or /reject) — Reject code changes ──
+            if (text === '/no' || text === '/reject') {
+                const result = await agentManager.rejectChanges();
+                await sendToTelegram(chatId, result.success
+                    ? `✅ ${result.command} (${result.duration}ms)`
+                    : `❌ ${result.error}`);
+                return;
+            }
+
+            // ── /stop (or /cancel) — Cancel AI task ──
+            if (text === '/stop' || text === '/cancel') {
+                const result = await agentManager.cancelCurrentTask();
+                await sendToTelegram(chatId, result.success
+                    ? `🛑 ${result.command} (${result.duration}ms)`
+                    : `⚠️ ${result.error}`);
+                return;
+            }
+
+            // ── /status — Enhanced: agents + trace + diagnostics ──
+            if (text === '/status') {
+                const latestConv = getLatestConversationDir();
+                const convId = latestConv ? path.basename(latestConv) : 'N/A';
+
+                // Build agent status lines
+                let agentStatusLines = '';
+                if (activeAgents.size > 0) {
+                    for (const info of activeAgents.values()) {
+                        const isPinned = pinnedWorkerPath === info.workspacePath;
+                        const pinIcon = isPinned ? '📌 ' : '🔹 ';
+                        const statusEmoji = STATUS_DISPLAY[info.status as AgentStatus]?.emoji || '❓';
+                        const statusLabel = STATUS_DISPLAY[info.status as AgentStatus]?.label || info.status;
+                        const elapsed = formatDuration(Date.now() - info.lastSeen);
+                        agentStatusLines += `${pinIcon}${info.workspaceName}: ${statusEmoji} ${statusLabel} (${elapsed})\n`;
+                    }
+                } else {
+                    agentStatusLines = `${statusManager.getStatusLine()}\n`;
+                }
+
+                // Fetch trace + diagnostics in parallel
+                const { trace, diagnostics } = await agentManager.getEnhancedStatus();
+
+                let diagInfo = '';
+                if (diagnostics.success && diagnostics.result && diagnostics.result !== '(void)') {
+                    try {
+                        const diag = JSON.parse(diagnostics.result);
+                        if (diag?.systemInfo) {
+                            diagInfo = `\n📧 ${diag.systemInfo.userName || 'N/A'}`;
+                        }
+                    } catch { }
+                }
+
+                let traceInfo = '';
+                if (trace.success && trace.result && trace.result !== '(void)') {
+                    const traceStr = String(trace.result).substring(0, 500);
+                    traceInfo = `\n\n📜 Trace:\n${traceStr}`;
+                }
+
+                await sendToTelegram(chatId,
+                    `📊 Antigravity Status\n\n` +
+                    `🤖 Agents:\n` +
+                    agentStatusLines +
+                    `\n💬 Conv: ${convId.substring(0, 8)}...\n` +
+                    `📡 IPC: Master (${activeAgents.size} agents)` +
+                    diagInfo +
+                    traceInfo
+                );
+                return;
+            }
+
+            // ── /list (or /agents) — List projects ──
             if (text === '/list' || text === '/agents') {
                 if (activeAgents.size === 0) {
                     await sendToTelegram(chatId, '📁 Không có Project nào đang mở.');
@@ -659,11 +776,51 @@ function startBot() {
                 return;
             }
 
-            if (text === '/fetch') {
-                await fetchResponseViaClipboard(chatId);
+            // ── /conv (or /conversations) — List conversations with inline switch ──
+            if (text === '/conv' || text === '/conversations') {
+                const convs = agentManager.listConversations(10);
+                if (convs.length === 0) {
+                    await sendToTelegram(chatId, '💬 No conversations found.');
+                    return;
+                }
+
+                let response = '💬 Conversations:\n\n';
+                const keyboard: TelegramBot.InlineKeyboardButton[][] = [];
+
+                for (let i = 0; i < convs.length; i++) {
+                    const c = convs[i];
+                    const ago = formatDuration(Date.now() - c.lastModified.getTime());
+                    const icons = [c.hasTaskMd ? '📋' : '', c.hasTelegramResponse ? '📱' : ''].filter(Boolean).join('');
+                    response += `${i + 1}. ${c.title} ${icons} (${ago})\n`;
+                    // Button text max 64 chars for Telegram
+                    const btnLabel = c.title.length > 30 ? c.title.substring(0, 27) + '...' : c.title;
+                    keyboard.push([{
+                        text: `💬 ${btnLabel}`,
+                        callback_data: `switch_conv_${c.id}`
+                    }]);
+                }
+
+                await bot?.sendMessage(chatId, response, {
+                    reply_markup: { inline_keyboard: keyboard }
+                });
                 return;
             }
 
+            // ── /conv <id> (or /conversation <id>) — Direct switch ──
+            if (text.startsWith('/conv ') || text.startsWith('/conversation ')) {
+                const convId = text.replace(/^\/(conv|conversation)\s+/, '').trim();
+                if (!convId) {
+                    await sendToTelegram(chatId, '⚠️ Usage: /conv <id>');
+                    return;
+                }
+                const result = await agentManager.switchConversation(convId);
+                await sendToTelegram(chatId, result.success
+                    ? `✅ ${result.command}`
+                    : `❌ ${result.error}`);
+                return;
+            }
+
+            // ── /new — New conversation ──
             if (text === '/new') {
                 try {
                     await vscode.commands.executeCommand('antigravity.startNewConversation');
@@ -674,43 +831,37 @@ function startBot() {
                 return;
             }
 
-            if (text === '/status') {
-                const latestConv = getLatestConversationDir();
-                const convId = latestConv ? path.basename(latestConv) : 'N/A';
-                
-                let diagInfo = '';
-                try {
-                    const diag = await vscode.commands.executeCommand('antigravity.getDiagnostics') as any;
-                    if (diag?.systemInfo) {
-                        diagInfo = `\n📧 User: ${diag.systemInfo.userName || 'N/A'}`;
-                    }
-                } catch { }
+            // ══════════════════════════════════════════════════
+            // HIDDEN COMMANDS — not shown in /start menu
+            // ══════════════════════════════════════════════════
 
-                let agentStatusLines = '';
-                if (activeAgents.size > 0) {
-                    for (const info of activeAgents.values()) {
-                        const isPinned = pinnedWorkerPath === info.workspacePath;
-                        const pinIcon = isPinned ? '📌 ' : '🔹 ';
-                        const statusEmoji = STATUS_DISPLAY[info.status as AgentStatus]?.emoji || '❓';
-                        const statusLabel = STATUS_DISPLAY[info.status as AgentStatus]?.label || info.status;
-                        const elapsed = formatDuration(Date.now() - info.lastSeen);
-                        agentStatusLines += `${pinIcon}${info.workspaceName}: ${statusEmoji} ${statusLabel} (${elapsed})\n`;
-                    }
+            // /trace — standalone trace (use /status instead)
+            if (text === '/trace') {
+                const result = await agentManager.getManagerTrace();
+                if (result.success && result.result && result.result !== '(void)') {
+                    await sendToTelegram(chatId, `📜 Trace:\n\n${String(result.result).substring(0, 3500)}`);
                 } else {
-                    agentStatusLines = `${statusManager.getStatusLine()}\n`;
+                    await sendToTelegram(chatId, `⚠️ ${result.error || 'No trace data'}`);
                 }
-
-                await sendToTelegram(chatId,
-                    `📊 Antigravity Multi-Project Status\n\n` +
-                    agentStatusLines +
-                    `\n💬 Latest Conv: ${convId.substring(0, 8)}...\n` +
-                    `🤖 Brain Watcher: ✅ Active\n` +
-                    `📡 IPC Role: Master (${activeAgents.size} agents)` +
-                    diagInfo
-                );
                 return;
             }
 
+            // /review — Open review changes panel
+            if (text === '/review') {
+                const result = await agentManager.openReviewChanges();
+                await sendToTelegram(chatId, result.success
+                    ? '✅ Review panel opened'
+                    : `❌ ${result.error}`);
+                return;
+            }
+
+            // /fetch — Clipboard fallback
+            if (text === '/fetch') {
+                await fetchResponseViaClipboard(chatId);
+                return;
+            }
+
+            // /notifications — Toggle status notifications
             if (text === '/notifications') {
                 const config = vscode.workspace.getConfiguration('telegramBridge');
                 const current = config.get<boolean>('statusNotifications', true);
@@ -725,6 +876,7 @@ function startBot() {
                 return;
             }
 
+            // /open <path> — Add folder to workspace
             if (text.startsWith('/open ')) {
                 const targetPath = text.replace('/open ', '').trim();
                 if (!fs.existsSync(targetPath)) {
@@ -743,6 +895,7 @@ function startBot() {
                 return;
             }
 
+            // /dump — Export VS Code commands
             if (text === '/dump') {
                 const cmds = await vscode.commands.getCommands(true);
                 const wsFolder = vscode.workspace.workspaceFolders?.[0];
@@ -756,7 +909,36 @@ function startBot() {
                 return;
             }
 
-            // ── Regular message → Send to AI ──
+            // /probe — Dev tool: API probing
+            if (text === '/probe' || text.startsWith('/probe ')) {
+                const targetCmd = text.replace('/probe', '').trim();
+
+                if (!targetCmd) {
+                    const groups = agentManager.getProbeGroups();
+                    let msg = '🔬 Probe Groups:\n\n';
+                    for (const [name, cmds] of Object.entries(groups)) {
+                        msg += `📂 /probe ${name} (${cmds.length} cmds)\n`;
+                    }
+                    msg += `\n/probe <group> — probe group\n/probe <cmd> — probe command`;
+                    await sendToTelegram(chatId, msg);
+                } else {
+                    const groups = agentManager.getProbeGroups();
+                    if (groups[targetCmd]) {
+                        await sendToTelegram(chatId, `🔬 Probing: ${targetCmd}...`);
+                        const results = await agentManager.probeAll(groups[targetCmd]);
+                        await sendToTelegram(chatId, agentManager.formatProbeResults(results));
+                    } else {
+                        const result = await agentManager.probeCommand(targetCmd);
+                        await sendToTelegram(chatId, agentManager.formatProbeResults([result]));
+                    }
+                }
+                return;
+            }
+
+            // ══════════════════════════════════════════════════
+            // REGULAR MESSAGE → Send to AI
+            // ══════════════════════════════════════════════════
+
             await sendToTelegram(chatId, `📤 _Đã gửi..._`, 'Markdown');
 
             // Send to pinned worker, or fallback to first worker, or broadcast if none
@@ -807,6 +989,7 @@ function startBot() {
                 return;
             }
 
+            // Handle project switching from /list inline keyboard
             if (data.startsWith('open_ws_')) {
                 const index = parseInt(data.replace('open_ws_', ''));
                 let currentIndex = 0;
@@ -828,6 +1011,16 @@ function startBot() {
                 } else {
                     bot?.answerCallbackQuery(query.id, { text: '⚠️ Workspace not found', show_alert: true });
                 }
+            }
+
+            // Handle conversation switching from /conv inline keyboard
+            if (data.startsWith('switch_conv_')) {
+                const convId = data.replace('switch_conv_', '');
+                bot?.answerCallbackQuery(query.id, { text: `Switching to ${convId.substring(0, 8)}...` });
+                const result = await agentManager.switchConversation(convId);
+                await sendToTelegram(chatId, result.success
+                    ? `✅ Switched to ${convId.substring(0, 8)}...`
+                    : `❌ ${result.error}`);
             }
         });
 
