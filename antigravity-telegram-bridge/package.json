@@ -1,8 +1,8 @@
 {
   "name": "antigravity-telegram-bridge",
   "displayName": "Telegram Bridge for Antigravity",
-  "description": "Connects Antigravity Agent to Telegram for remote chat and control. v0.5.5: Simplified commands (/ok /no /stop /conv).",
-  "version": "0.5.6",
+  "description": "Connects Antigravity Agent to Telegram for remote chat and control. v0.6.0: Bot starts PAUSED by default, /start to activate, /pause to silence.",
+  "version": "0.6.0",
   "publisher": "daibui",
   "engines": {
     "vscode": "^1.106.0"
@@ -32,6 +32,11 @@
           "type": "boolean",
           "default": true,
           "description": "Send proactive status change notifications (Online/Thinking/Working/Idle/Offline) to Telegram."
+        },
+        "telegramBridge.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-start bot in ACTIVE mode when VS Code opens. When false (default), bot starts PAUSED and requires /start on Telegram to activate."
         }
       }
     },

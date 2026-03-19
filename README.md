@@ -12,7 +12,15 @@ A native VS Code / Antigravity extension that bridges your Telegram Bot to Antig
 
 ## Features & Achievements 🚀
 
-### v0.5.6 — Simplified Commands (Current)
+### v0.6.0 — Bot Pause Mode (Current)
+
+- **✅ Default PAUSED:** Bot starts in **PAUSED** mode — no messages or notifications while you work on PC.
+- **✅ `/start` to Activate:** Send `/start` on Telegram to resume the bot from paused state.
+- **✅ `/pause` to Silence:** Send `/pause` to mute the bot without disconnecting from Telegram.
+- **✅ `autoStart` Config:** Set `telegramBridge.autoStart: true` to restore old auto-start behavior.
+- **✅ Three States:** STOPPED (polling off) → PAUSED (polling on, silent) → ACTIVE (fully operational).
+
+### v0.5.5 — Simplified Commands
 
 - **✅ Simplified Command Set:** Reduced from 12+ commands to **7 main commands** for daily workflow.
 - **✅ `/ok` & `/no`:** Quick accept/reject code changes (replaces verbose `/accept` & `/reject`).
@@ -52,12 +60,29 @@ A native VS Code / Antigravity extension that bridges your Telegram Bot to Antig
 - **✅ Telegram Bot Security:** User ID authentication, blocks unauthorized access.
 - **✅ Legacy Clipboard Fallback:** AppleScript input injection when API fails (macOS).
 
+## Bot States
+
+```
+STOPPED ──(VS Code: BOT Start)──→ ACTIVE
+PAUSED  ──(/start on Telegram)──→ ACTIVE
+ACTIVE  ──(/pause on Telegram)──→ PAUSED
+ANY     ──(VS Code: BOT Stop)───→ STOPPED
+```
+
+| State | Polling | /start | Other cmds | Brain Watcher | Notifications |
+|-------|---------|--------|-----------|---------------|---------------|
+| **STOPPED** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **PAUSED** | ✅ | ✅ | ❌ | ❌ | ❌ |
+| **ACTIVE** | ✅ | ✅ | ✅ | ✅ | ✅ |
+
 ## Telegram Commands
 
-### Main Commands (7)
+### Main Commands
 
 | Command | Description |
 |---------|-------------|
+| `/start` | ▶️ Activate bot from PAUSED / show help |
+| `/pause` | ⏸️ Silence bot (no messages, no notifications) |
 | `/ok` | ✅ Accept all pending code changes |
 | `/no` | ❌ Reject all pending code changes |
 | `/stop` | 🛑 Cancel AI task + clear diffs |
@@ -89,10 +114,14 @@ A native VS Code / Antigravity extension that bridges your Telegram Bot to Antig
    ```json
    {
        "telegramBridge.botToken": "YOUR_BOT_TOKEN",
-       "telegramBridge.userId": "YOUR_TELEGRAM_USER_ID"
+       "telegramBridge.userId": "YOUR_TELEGRAM_USER_ID",
+       "telegramBridge.autoStart": false
    }
    ```
-3. Reload window — Bot starts automatically
+3. Reload window → Bot starts in **PAUSED** mode
+4. Send `/start` on Telegram to activate
+
+> **Tip:** Set `"telegramBridge.autoStart": true` to auto-activate on VS Code startup (old behavior).
 
 ## Project Structure
 
@@ -145,4 +174,5 @@ npx vsce package --no-dependencies
 | 0.5.3 | Deep probe conversation picker |
 | 0.5.4 | Stabilize probe results |
 | 0.5.5 | Command simplification: /ok, /no, /stop, /conv, enhanced /status |
-| **0.5.6** | **README update, code cleanup** |
+| 0.5.6 | README update, code cleanup |
+| **0.6.0** | **Bot PAUSED mode: default silent, /start to activate, /pause to silence** |

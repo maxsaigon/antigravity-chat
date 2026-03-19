@@ -77,8 +77,8 @@ class StatusManager {
             this.resetIdleTimer();
         }
 
-        // Send proactive notification
-        if (this.notificationsEnabled && activeTelegramChatId && bot) {
+        // Send proactive notification (only when bot is active)
+        if (this.notificationsEnabled && isBotActive && activeTelegramChatId && bot) {
             const display = STATUS_DISPLAY[newStatus];
             // Don't spam for TYPING state (too frequent)
             if (newStatus !== AgentStatus.TYPING) {
@@ -167,6 +167,7 @@ function simpleHash(str: string): string {
 
 let bot: TelegramBot | undefined;
 let isStarted = false;
+let isBotActive = false; // Bot starts PAUSED — only listens to /Start
 let isMaster = false;
 let pinnedWorkerPath: string | undefined;
 let pinnedWorkerName: string | undefined;
@@ -407,6 +408,7 @@ function startBrainWatcher() {
     brainWatcher = fs.watch(brainDir, { recursive: true }, (eventType, filename) => {
         if (!filename) return;
         if (!activeTelegramChatId) return;
+        if (!isBotActive) return; // Don't forward to Telegram when paused
 
         const captureType = shouldCaptureFile(filename);
         if (!captureType) return;
@@ -603,9 +605,17 @@ export function activate(context: vscode.ExtensionContext) {
     startBrainWatcher();
 
     // IPC: try to be Master
+    const config2 = vscode.workspace.getConfiguration('telegramBridge');
+    const autoStart = config2.get<boolean>('autoStart', false);
+
     initIPC(() => {
         isMaster = true;
-        startBot();
+        if (autoStart) {
+            startBot();
+        } else {
+            // Start bot in PAUSED mode: polling is on but only /Start is processed
+            startBotPaused();
+        }
     });
 }
 
@@ -627,7 +637,8 @@ function startBot() {
     try {
         bot = new TelegramBot(token, { polling: true });
         isStarted = true;
-        console.log('[TelegramBridge v2] Bot started!');
+        isBotActive = true;
+        console.log('[TelegramBridge v2] Bot started (ACTIVE)!');
         vscode.window.showInformationMessage('Telegram Bridge v2 started! 🚀');
         statusManager.setStatus(AgentStatus.ONLINE);
 
@@ -648,25 +659,72 @@ function startBot() {
             if (!text) return;
 
             // ══════════════════════════════════════════════════
-            // COMMANDS — v0.5.5 Simplified
-            // 7 main commands + hidden dev/legacy commands
+            // COMMANDS — v0.6.0 With Pause Mode
+            // Bot can be PAUSED (silent) or ACTIVE
             // ══════════════════════════════════════════════════
 
-            // ── /start — Welcome & help ──
+            // ── /start — Resume from PAUSED or show help ──
             if (text === '/start') {
-                await sendToTelegram(chatId,
-                    '🤖 Antigravity Telegram Bridge v0.5.5\n\n' +
-                    '✅ Connected! Gửi tin nhắn bất kỳ để chat với AI.\n\n' +
-                    '📋 Commands:\n' +
-                    '/ok — Accept code changes\n' +
-                    '/no — Reject code changes\n' +
-                    '/stop — Hủy task AI\n' +
-                    '/status — Trạng thái + trace + diagnostics\n' +
-                    '/list — Danh sách projects\n' +
-                    '/conv — Conversations (list + switch)\n' +
-                    '/new — Tạo conversation mới\n\n' +
-                    '💡 Gõ bất kỳ text → gửi cho AI'
-                );
+                if (!isBotActive) {
+                    // Resume from paused state
+                    isBotActive = true;
+                    statusManager.setStatus(AgentStatus.ONLINE);
+                    await sendToTelegram(chatId,
+                        '▶️ Bot ACTIVATED!\n\n' +
+                        '🤖 Antigravity Telegram Bridge v0.6.0\n' +
+                        'Gửi tin nhắn bất kỳ để chat với AI.\n\n' +
+                        '📋 Commands:\n' +
+                        '/ok — Accept code changes\n' +
+                        '/no — Reject code changes\n' +
+                        '/stop — Hủy task AI\n' +
+                        '/pause — Tạm dừng bot (im lặng)\n' +
+                        '/status — Trạng thái + trace + diagnostics\n' +
+                        '/list — Danh sách projects\n' +
+                        '/conv — Conversations (list + switch)\n' +
+                        '/new — Tạo conversation mới\n\n' +
+                        '💡 Gõ bất kỳ text → gửi cho AI'
+                    );
+                    console.log('[TelegramBridge] Bot RESUMED via /start');
+                } else {
+                    // Already active — show help
+                    await sendToTelegram(chatId,
+                        '🤖 Antigravity Telegram Bridge v0.6.0\n\n' +
+                        '✅ Bot đang ACTIVE! Gửi tin nhắn bất kỳ để chat với AI.\n\n' +
+                        '📋 Commands:\n' +
+                        '/ok — Accept code changes\n' +
+                        '/no — Reject code changes\n' +
+                        '/stop — Hủy task AI\n' +
+                        '/pause — Tạm dừng bot (im lặng)\n' +
+                        '/status — Trạng thái + trace + diagnostics\n' +
+                        '/list — Danh sách projects\n' +
+                        '/conv — Conversations (list + switch)\n' +
+                        '/new — Tạo conversation mới\n\n' +
+                        '💡 Gõ bất kỳ text → gửi cho AI'
+                    );
+                }
+                return;
+            }
+
+            // ── /pause — Silence the bot ──
+            if (text === '/pause') {
+                if (isBotActive) {
+                    isBotActive = false;
+                    statusManager.setStatus(AgentStatus.OFFLINE);
+                    await sendToTelegram(chatId,
+                        '⏸️ Bot PAUSED\n\n' +
+                        'Sẽ không gửi tin nhắn hay notifications.\n' +
+                        'Gửi /start để kích hoạt lại.'
+                    );
+                    console.log('[TelegramBridge] Bot PAUSED via /pause');
+                } else {
+                    await sendToTelegram(chatId, '⏸️ Bot đã đang PAUSED.\nGửi /start để kích hoạt lại.');
+                }
+                return;
+            }
+
+            // ── When PAUSED: ignore everything except /start and /pause ──
+            if (!isBotActive) {
+                // Silently ignore all messages when paused
                 return;
             }
 
@@ -1054,8 +1112,35 @@ export async function handleIncomingMessage(text: string, chatId: number, target
     await sendToAntigravity(text, chatId);
 }
 
+/**
+ * Start bot in PAUSED mode: polling is active but only /start is processed.
+ * This allows remote activation via Telegram without auto-disturbing.
+ */
+function startBotPaused() {
+    if (isStarted) {
+        vscode.window.showInformationMessage('Telegram Bot is already running (paused mode).');
+        return;
+    }
+
+    const config = vscode.workspace.getConfiguration('telegramBridge');
+    const token = config.get<string>('botToken');
+
+    if (!token) {
+        vscode.window.showErrorMessage('Telegram Bot Token is not set. Configure in settings.');
+        return;
+    }
+
+    // Reuse the full startBot logic but override isBotActive to false after
+    startBot();
+    isBotActive = false;
+    statusManager.setStatus(AgentStatus.OFFLINE);
+    console.log('[TelegramBridge] Bot started in PAUSED mode. Send /start on Telegram to activate.');
+    vscode.window.showInformationMessage('Telegram Bridge started in PAUSED mode. Send /start on Telegram to activate.');
+}
+
 function stopBot() {
     if (bot && isStarted) {
+        isBotActive = false;
         statusManager.setStatus(AgentStatus.OFFLINE);
         bot.stopPolling().then(() => {
             isStarted = false;
